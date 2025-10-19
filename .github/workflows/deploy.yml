@@ -5,20 +5,20 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: 'us-east-1'  # Change to your preferred region
+  AWS_REGION: 'us-east-1'
 
 jobs:
-  deploy:
+  setup-backend:
     runs-on: ubuntu-latest
-
+    outputs:
+      bucket_name: ${{ steps.set-backend.outputs.bucket_name }}
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: '1.0'  # Specify your Terraform version
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -27,8 +27,76 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Terraform Init
+    - name: Terraform Init (Backend Setup)
       run: terraform init
+
+    - name: Terraform Apply (Backend Setup)
+      id: apply-backend
+      run: |
+        terraform apply -auto-approve -target=aws_s3_bucket.tf_state -target=random_id.suffix
+        echo "bucket_name=$(terraform output -raw tf_state_bucket_name)" >> $GITHUB_OUTPUT
+
+    - name: Configure Backend
+      id: set-backend
+      run: |
+        BUCKET_NAME=$(terraform output -raw tf_state_bucket_name)
+        echo "bucket_name=$BUCKET_NAME" >> $GITHUB_OUTPUT
+        
+        # Create backend configuration file
+        cat > backend.tf << EOF
+        terraform {
+          backend "s3" {
+            bucket = "$BUCKET_NAME"
+            key    = "terraform.tfstate"
+            region = "${{ env.AWS_REGION }}"
+          }
+        }
+        EOF
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: setup-backend
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Create Lambda packages
+      run: |
+        cd lambda
+        pip install -r requirements.txt -t .
+        zip -r get_string.zip .
+        cp get_string.zip update_string.zip
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure Backend from Previous Job
+      run: |
+        cat > backend.tf << EOF
+        terraform {
+          backend "s3" {
+            bucket = "${{ needs.setup-backend.outputs.bucket_name }}"
+            key    = "terraform.tfstate"
+            region = "${{ env.AWS_REGION }}"
+          }
+        }
+        EOF
+
+    - name: Terraform Init with Backend
+      run: terraform init -migrate-state
 
     - name: Terraform Validate
       run: terraform validate
@@ -38,3 +106,8 @@ jobs:
 
     - name: Terraform Apply
       run: terraform apply -auto-approve -input=false
+
+    - name: Output URLs
+      run: |
+        echo "Website URL: $(terraform output -raw website_url)"
+        echo "API URL: $(terraform output -raw api_url)"
