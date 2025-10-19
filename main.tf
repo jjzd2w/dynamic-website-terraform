@@ -7,13 +7,14 @@ terraform {
     }
   }
 
-  # Add backend configuration for remote state
+  # Use local state for initial creation, then migrate to S3
   backend "s3" {
     bucket = "dynamic-website-tf-state-2024"
     key    = "terraform.tfstate"
     region = "us-east-1"
   }
 }
+
 
 provider "aws" {
   region = var.aws_region
