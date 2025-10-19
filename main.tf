@@ -6,6 +6,13 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  # Add backend configuration for remote state
+  backend "s3" {
+    bucket = "dynamic-website-tf-state-2024"
+    key    = "terraform.tfstate"
+    region = "us-east-1"
+  }
 }
 
 provider "aws" {
@@ -50,7 +57,7 @@ resource "aws_s3_bucket_policy" "bucket_policy" {
   })
 }
 
-# DynamoDB table for storing the dynamic string
+# DynamoDB table for storing the dynamic string - FIXED
 resource "aws_dynamodb_table" "string_table" {
   name           = "DynamicStringTable"
   billing_mode   = "PAY_PER_REQUEST"
@@ -61,10 +68,7 @@ resource "aws_dynamodb_table" "string_table" {
     type = "S"
   }
 
-  attribute {
-    name = "current_string"
-    type = "S"
-  }
+  # Removed the non-key attribute definition that was causing the error
 }
 
 # IAM role for Lambda functions
@@ -207,13 +211,13 @@ resource "aws_lambda_permission" "api_gw_update" {
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
 }
 
-# Initial data in DynamoDB
+# Initial data in DynamoDB - FIXED
 resource "aws_dynamodb_table_item" "initial_string" {
   table_name = aws_dynamodb_table.string_table.name
   hash_key   = aws_dynamodb_table.string_table.hash_key
 
   item = jsonencode({
-    id = { S = "current" }
-    current_string = { S = "dynamic string" }
+    id = { "S" = "current" }
+    current_string = { "S" = "dynamic string" }
   })
 }
