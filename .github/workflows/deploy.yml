@@ -26,12 +26,9 @@ jobs:
         cd lambda
         pip install -r requirements.txt -t .
         zip -r get_string.zip .
+        # Create a separate zip for update_string (same dependencies)
         cp get_string.zip update_string.zip
-        # Note: Both functions share the same dependencies
-        # so we can use the same package
-
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
+        cd ..
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -40,14 +37,66 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Terraform Init
-      run: terraform init
+    - name: Create Terraform State Bucket
+      run: |
+        # Check if bucket exists, create if it doesn't
+        if ! aws s3api head-bucket --bucket $TF_STATE_BUCKET 2>/dev/null; then
+          echo "Creating Terraform state bucket: $TF_STATE_BUCKET"
+          if [ "$AWS_REGION" = "us-east-1" ]; then
+            aws s3api create-bucket \
+              --bucket $TF_STATE_BUCKET \
+              --region $AWS_REGION
+          else
+            aws s3api create-bucket \
+              --bucket $TF_STATE_BUCKET \
+              --region $AWS_REGION \
+              --create-bucket-configuration LocationConstraint=$AWS_REGION
+          fi
+          
+          # Enable versioning for state bucket
+          aws s3api put-bucket-versioning \
+            --bucket $TF_STATE_BUCKET \
+            --versioning-configuration Status=Enabled
+          
+          # Enable encryption for state bucket
+          aws s3api put-bucket-encryption \
+            --bucket $TF_STATE_BUCKET \
+            --server-side-encryption-configuration '{
+              "Rules": [
+                {
+                  "ApplyServerSideEncryptionByDefault": {
+                    "SSEAlgorithm": "AES256"
+                  }
+                }
+              ]
+            }'
+          
+          echo "Terraform state bucket created successfully"
+        else
+          echo "Terraform state bucket already exists"
+        fi
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    - name: Terraform Init with Backend
+      run: |
+        # Initialize Terraform with the S3 backend
+        terraform init -migrate-state \
+          -backend-config="bucket=$TF_STATE_BUCKET" \
+          -backend-config="key=terraform.tfstate" \
+          -backend-config="region=$AWS_REGION"
 
     - name: Terraform Validate
       run: terraform validate
 
     - name: Terraform Plan
-      run: terraform plan -input=false
+      run: terraform plan -input=false -out=tfplan
 
     - name: Terraform Apply
-      run: terraform apply -auto-approve -input=false
+      run: terraform apply -input=false -auto-approve tfplan
+
+    - name: Output Deployment URLs
+      run: |
+        echo "Website URL: $(terraform output -raw website_url || echo 'Not available')"
+        echo "API URL: $(terraform output -raw api_url || echo 'Not available')"
